@@ -52,13 +52,25 @@ var (
 	consumergroupMembers               *prometheus.Desc
 )
 
+type stringMatcher interface {
+	MatchString(s string) bool
+}
+
+type reverseStringMatcher struct {
+	original stringMatcher
+}
+
+func (r *reverseStringMatcher) MatchString(s string) bool {
+	return !r.original.MatchString(s)
+}
+
 // Exporter collects Kafka stats from the given server and exports them using
 // the prometheus metrics package.
 type Exporter struct {
 	client                  sarama.Client
 	adminClient             func() (sarama.ClusterAdmin, error)
-	topicFilter             *regexp.Regexp
-	groupFilter             *regexp.Regexp
+	topicFilter             stringMatcher
+	groupFilter             stringMatcher
 	nextMetadataRefresh     time.Time
 	metadataRefreshInterval time.Duration
 }
@@ -77,6 +89,7 @@ type kafkaOpts struct {
 	kafkaVersion             string
 	labels                   string
 	metadataRefreshInterval  string
+	reverseGroupMatching     bool
 }
 
 // CanReadCertAndKey returns true if the certificate and key files already exists,
@@ -188,6 +201,14 @@ func NewExporter(opts kafkaOpts, topicFilter string, groupFilter string) (*Expor
 	}
 	plog.Infoln("Done Init Clients")
 
+	var groupMatcher stringMatcher
+	groupMatcher = regexp.MustCompile(groupFilter)
+	if opts.reverseGroupMatching {
+		groupMatcher = &reverseStringMatcher{
+			original: groupMatcher,
+		}
+	}
+
 	// Init our exporter.
 	return &Exporter{
 		client: client,
@@ -195,7 +216,7 @@ func NewExporter(opts kafkaOpts, topicFilter string, groupFilter string) (*Expor
 			return sarama.NewClusterAdmin(opts.uri, config)
 		},
 		topicFilter:             regexp.MustCompile(topicFilter),
-		groupFilter:             regexp.MustCompile(groupFilter),
+		groupFilter:             groupMatcher,
 		nextMetadataRefresh:     time.Now(),
 		metadataRefreshInterval: interval,
 	}, nil
@@ -554,6 +575,7 @@ func main() {
 	kingpin.Flag("kafka.version", "Kafka broker version").Default(sarama.V1_0_0_0.String()).StringVar(&opts.kafkaVersion)
 	kingpin.Flag("kafka.labels", "Kafka cluster name").Default("").StringVar(&opts.labels)
 	kingpin.Flag("refresh.metadata", "Metadata refresh interval").Default("30s").StringVar(&opts.metadataRefreshInterval)
+	kingpin.Flag("group.filter.reverse", "Defines whether we should reverse the regex match for consumer group IDs").Default("false").BoolVar(&opts.reverseGroupMatching)
 
 	plog.AddFlags(kingpin.CommandLine)
 	kingpin.Version(version.Print("kafka_exporter"))
